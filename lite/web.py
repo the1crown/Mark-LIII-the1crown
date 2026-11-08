@@ -425,31 +425,44 @@ function speakBrowser(text) {
   });
 }
 
+function speakableClient(text) {
+  // Mirror server: speak lead sentences so Edge starts sooner
+  const clean = (text || '').replace(/\s+/g, ' ').trim();
+  if (!clean) return '';
+  const parts = clean.split(/(?<=[.!?…])\s+/);
+  let out = [];
+  for (const p of parts) {
+    if (!p) continue;
+    out.push(/[.!?…]$/.test(p) ? p : p + '.');
+    const joined = out.join(' ');
+    if (out.length >= 2 || joined.length >= 220) return joined.slice(0, 220);
+  }
+  return clean.slice(0, 220);
+}
+
 async function speak(text) {
   if (!ttsOn.checked || !text) return;
   cancelSpeech();
   setStatus('SPEAKING');
   setOrb('speaking');
+  const spoken = speakableClient(text);
+  // Progressive MP3: browser plays while Edge still streams chunks
+  const url = '/api/tts?text=' + encodeURIComponent(spoken)
+    + '&voice=' + encodeURIComponent(ttsVoice)
+    + '&t=' + Date.now();
   try {
-    const r = await fetch('/api/tts', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ text, voice: ttsVoice })
-    });
-    if (!r.ok) throw new Error('tts ' + r.status);
-    const buf = await r.arrayBuffer();
-    const blob = new Blob([buf], { type: 'audio/mpeg' });
-    const url = URL.createObjectURL(blob);
     await new Promise((resolve, reject) => {
-      const a = new Audio(url);
+      const a = new Audio();
       audioPlayer = a;
-      a.onended = () => { URL.revokeObjectURL(url); resolve(); };
-      a.onerror = () => { URL.revokeObjectURL(url); reject(new Error('audio')); };
+      a.preload = 'auto';
+      a.onplaying = () => setStatus('SPEAKING');
+      a.onended = () => resolve();
+      a.onerror = () => reject(new Error('audio'));
+      a.src = url;
       a.play().catch(reject);
     });
   } catch (e) {
-    // Fallback — still better than silence if Edge TTS is offline
-    await speakBrowser(text);
+    await speakBrowser(spoken || text);
   }
 }
 
@@ -697,6 +710,9 @@ if (SR) {
 
 
 class Handler(BaseHTTPRequestHandler):
+    # HTTP/1.1 enables chunked TTS streaming so <audio> can start early.
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, fmt: str, *args) -> None:
         print(f"[lite-web] {args[0]}" if args else f"[lite-web] {fmt}")
 
@@ -709,7 +725,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
         if path in ("/", "/index.html"):
             body = _HTML.encode("utf-8")
             self.send_response(200)
@@ -717,6 +734,31 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if path == "/api/tts":
+            from urllib.parse import parse_qs
+            qs = parse_qs(parsed.query or "")
+            text = (qs.get("text") or [""])[0]
+            voice = ((qs.get("voice") or [""])[0] or "").strip() or None
+            if not text.strip():
+                self._json(400, {"error": "empty text"})
+                return
+            try:
+                from .voice_edge import iter_mp3
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                for chunk in iter_mp3(text, voice=voice):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except Exception as e:
+                if not self.wfile.closed:
+                    try:
+                        self._json(500, {"error": f"tts failed: {e}"})
+                    except Exception:
+                        pass
             return
         if path in ("/api/health", "/api/diag"):
             _session.reload()
@@ -785,6 +827,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/tts":
+            # Prefer GET streaming; POST kept for compatibility (full buffer).
             text = str(data.get("text") or "").strip()
             if not text:
                 self._json(400, {"error": "empty text"})
@@ -792,9 +835,6 @@ class Handler(BaseHTTPRequestHandler):
             voice = str(data.get("voice") or "").strip() or None
             try:
                 from .voice_edge import synthesize
-                _session.reload()
-                if not voice:
-                    voice = str(_session.settings.get("tts_voice") or "") or None
                 mp3 = synthesize(text, voice=voice)
             except Exception as e:
                 self._json(500, {"error": f"tts failed: {e}"})
@@ -828,15 +868,16 @@ class Handler(BaseHTTPRequestHandler):
 def run(host: str = HOST, port: int = PORT) -> None:
     global HOST, PORT
     HOST, PORT = host, port
-    # Warm whichever motor will answer first.
+    # Warm LLM + TTS so the first spoken turn is not cold.
     try:
         from . import providers
         from . import router
+        from . import voice_edge
         _session.reload()
         route = router.choose_route(_session.settings, _session.secrets, None)
         print(f"[lite-web] Warming {route.backend}:{route.model}…")
         if route.backend == "ollama" and not providers.ping_ollama(route.base_url):
-            print("[lite-web] Ollama not up — skip warmup.")
+            print("[lite-web] Ollama not up — skip model warmup.")
         else:
             providers.chat(
                 route,
@@ -845,6 +886,9 @@ def run(host: str = HOST, port: int = PORT) -> None:
                 timeout=180,
             )
             print("[lite-web] Model ready.")
+        print("[lite-web] Warming neural voice…")
+        voice_edge.warmup(str(_session.settings.get("tts_voice") or "") or None)
+        print("[lite-web] Voice ready.")
     except Exception as e:
         print(f"[lite-web] Warmup skipped: {e}")
 

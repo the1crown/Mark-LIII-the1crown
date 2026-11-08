@@ -39,9 +39,10 @@ DEFAULTS: dict[str, Any] = {
         "You are a concise desktop assistant. Answer in few sentences. "
         "Prefer Danish if the user writes Danish. Do not invent tool results."
     ),
-    # Browser voice (Web Speech API) — no cloud key required.
+    # Voice: browser mic + Edge neural TTS (no cloud key).
     "push_to_talk_enabled": True,
     "tts_enabled": True,
+    "tts_voice": "da-DK-JeppeNeural",  # or da-DK-ChristelNeural
 }
 
 SECRET_KEYS = ("OPENAI_API_KEY", "MISTRAL_API_KEY")

@@ -23,7 +23,7 @@ ollama pull qwen2.5:3b
 cd path\to\Mark-LIII-the1crown
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install requests
+pip install requests edge-tts
 copy .env.example .env
 ```
 

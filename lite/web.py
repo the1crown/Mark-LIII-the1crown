@@ -252,6 +252,14 @@ _HTML = r"""<!DOCTYPE html>
   .legend .l-mistral { background: #ff8a3d; }
   .legend .l-openai { background: #6ea8ff; }
   .legend .l-local { background: #b08cff; }
+  .heard {
+    padding: 8px 20px; font-size: 13px; letter-spacing: .04em;
+    color: var(--accent);
+    border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    min-height: 34px;
+  }
+  .heard[hidden] { display: none; }
 </style>
 </head>
 <body class="theme-mistral">
@@ -260,6 +268,7 @@ _HTML = r"""<!DOCTYPE html>
     <div id="status">STANDBY</div>
     <div class="chip" id="modelChip">MODEL · —</div>
   </header>
+  <div id="heard" class="heard" hidden></div>
 
   <main class="stage">
     <div id="log" aria-live="polite"></div>
@@ -296,6 +305,7 @@ const ttsOn = document.getElementById('tts');
 const statusEl = document.getElementById('status');
 const modelChip = document.getElementById('modelChip');
 const orb = document.getElementById('orb');
+const heardEl = document.getElementById('heard');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 let conversation = false;  // continuous talk loop
@@ -304,6 +314,9 @@ let busy = false;
 let rec = null;
 let finalText = '';
 let listenTimer = null;
+let micStream = null;
+let audioPlayer = null;
+let ttsVoice = 'da-DK-JeppeNeural';
 
 function setStatus(t) { statusEl.textContent = t; }
 
@@ -357,23 +370,76 @@ function add(role, text, meta) {
   log.scrollTop = log.scrollHeight;
 }
 
+function setHeard(text) {
+  if (!text) { heardEl.hidden = true; heardEl.textContent = ''; return; }
+  heardEl.hidden = false;
+  heardEl.textContent = 'Hører: ' + text;
+}
+
 function cancelSpeech() {
+  if (audioPlayer) {
+    try { audioPlayer.pause(); audioPlayer.src = ''; } catch (e) {}
+    audioPlayer = null;
+  }
   if (window.speechSynthesis) window.speechSynthesis.cancel();
 }
 
-function speak(text) {
+function speakBrowser(text) {
   return new Promise((resolve) => {
-    if (!ttsOn.checked || !window.speechSynthesis || !text) { resolve(); return; }
-    cancelSpeech();
+    if (!window.speechSynthesis || !text) { resolve(); return; }
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'da-DK';
-    u.rate = 1.05;
+    u.rate = 1.0;
     u.onend = () => resolve();
     u.onerror = () => resolve();
-    setStatus('SPEAKING');
-    setOrb('speaking');
     window.speechSynthesis.speak(u);
   });
+}
+
+async function speak(text) {
+  if (!ttsOn.checked || !text) return;
+  cancelSpeech();
+  setStatus('SPEAKING');
+  setOrb('speaking');
+  try {
+    const r = await fetch('/api/tts', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ text, voice: ttsVoice })
+    });
+    if (!r.ok) throw new Error('tts ' + r.status);
+    const buf = await r.arrayBuffer();
+    const blob = new Blob([buf], { type: 'audio/mpeg' });
+    const url = URL.createObjectURL(blob);
+    await new Promise((resolve, reject) => {
+      const a = new Audio(url);
+      audioPlayer = a;
+      a.onended = () => { URL.revokeObjectURL(url); resolve(); };
+      a.onerror = () => { URL.revokeObjectURL(url); reject(new Error('audio')); };
+      a.play().catch(reject);
+    });
+  } catch (e) {
+    // Fallback — still better than silence if Edge TTS is offline
+    await speakBrowser(text);
+  }
+}
+
+async function ensureMic() {
+  if (micStream) return true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    add('bot', 'Ingen mikrofon-adgang i denne browser.');
+    return false;
+  }
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+    // Keep the track alive so Chrome grants SpeechRecognition reliably.
+    return true;
+  } catch (e) {
+    add('bot', 'Mikrofon nægtet. Tillad mic for http://127.0.0.1:7860 i browseren, og prøv igen.');
+    return false;
+  }
 }
 
 function scheduleListen(delay) {
@@ -415,11 +481,13 @@ function stopConversation() {
   updateTalkBtn();
 }
 
-function startConversation() {
+async function startConversation() {
   if (!rec) return;
+  const ok = await ensureMic();
+  if (!ok) return;
   conversation = true;
   updateTalkBtn();
-  add('bot', 'Samtale startet. Tal frit — jeg lytter igen efter hvert svar. Sig stop eller tryk knappen for at afslutte.');
+  add('bot', 'Samtale startet. Tal nu — du skal se «Hører: …» mens jeg lytter. Sig stop eller Esc for at afslutte.');
   startListen();
 }
 
@@ -482,10 +550,10 @@ f.addEventListener('submit', async (e) => {
   await sendText(text, false);
 });
 
-talk.addEventListener('click', () => {
+talk.addEventListener('click', async () => {
   if (!SR) return;
   if (conversation) stopConversation();
-  else startConversation();
+  else await startConversation();
 });
 
 window.addEventListener('keydown', (e) => {
@@ -502,16 +570,22 @@ window.addEventListener('keydown', (e) => {
 fetch('/api/health').then(r => r.json()).then(h => {
   const provider = (h.preferred || (h.cloud_keys && h.cloud_keys.mistral ? 'mistral' : 'ollama'));
   applyTheme(provider, h.model || provider);
+  if (h.tts_voice) ttsVoice = h.tts_voice;
 }).catch(() => {});
 
 if (SR) {
   rec = new SR();
   rec.lang = 'da-DK';
   rec.interimResults = true;
-  rec.continuous = false; // one utterance per turn; we re-arm ourselves
+  rec.continuous = false;
   rec.maxAlternatives = 1;
 
-  rec.onstart = () => { finalText = ''; };
+  rec.onstart = () => {
+    finalText = '';
+    setHeard('…');
+    setStatus('LISTENING');
+    setOrb('listening');
+  };
 
   rec.onresult = (ev) => {
     let interim = '';
@@ -520,20 +594,27 @@ if (SR) {
       if (ev.results[i].isFinal) finalText += t;
       else interim += t;
     }
-    q.value = (finalText || interim).trim();
+    const shown = (finalText || interim).trim();
+    q.value = shown;
+    setHeard(shown || '…');
   };
 
   rec.onerror = (ev) => {
     recognizing = false;
     const err = (ev && ev.error) || '';
-    // no-speech / aborted: keep the conversation loop alive
-    if (conversation && (err === 'no-speech' || err === 'aborted' || err === 'network')) {
-      scheduleListen(350);
+    if (err === 'not-allowed') {
+      add('bot', 'Mikrofon blokeret. Klik på lås/info i adresselinjen og tillad mikrofon.');
+      stopConversation();
+      return;
+    }
+    if (conversation && (err === 'no-speech' || err === 'aborted' || err === 'network' || err === 'audio-capture')) {
+      scheduleListen(400);
       return;
     }
     if (!conversation) {
       setStatus('STANDBY');
       setOrb(null);
+      setHeard('');
       updateTalkBtn();
     }
   };
@@ -543,6 +624,7 @@ if (SR) {
     const t = (finalText || q.value || '').trim();
     q.value = '';
     finalText = '';
+    setHeard('');
     if (!conversation) {
       updateTalkBtn();
       setStatus('STANDBY');
@@ -550,15 +632,15 @@ if (SR) {
       return;
     }
     if (t) sendText(t, true);
-    else scheduleListen(250); // silence — keep listening
+    else scheduleListen(250);
   };
 
   updateTalkBtn();
-  add('bot', 'Systems online. Tryk Start samtale — så snakker vi løbende. Esc stopper.');
+  add('bot', 'Systems online. Tryk Start samtale, tillad mikrofon, og tal. Stemmen er neural (Edge). Esc stopper.');
 } else {
   updateTalkBtn();
   setStatus('NO MIC API');
-  add('bot', 'Tale-API mangler. Brug Chrome/Edge, eller skriv i stedet.');
+  add('bot', 'Tale-API mangler. Brug Chrome eller Edge på Windows.');
 }
 </script>
 </body>
@@ -607,7 +689,8 @@ class Handler(BaseHTTPRequestHandler):
             }.get(preferred, s.get("local_model"))
             self._json(200, {
                 "ok": True, "host": HOST, "port": PORT,
-                "voice": "browser-web-speech",
+                "voice": "edge-neural",
+                "tts_voice": s.get("tts_voice") or "da-DK-JeppeNeural",
                 "preferred": preferred,
                 "model": model,
                 "cloud_keys": {
@@ -620,15 +703,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path != "/api/chat":
-            self._json(404, {"error": "not found"})
-            return
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             data = json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError:
             self._json(400, {"error": "invalid json"})
+            return
+
+        if path == "/api/tts":
+            text = str(data.get("text") or "").strip()
+            if not text:
+                self._json(400, {"error": "empty text"})
+                return
+            voice = str(data.get("voice") or "").strip() or None
+            try:
+                from .voice_edge import synthesize
+                _session.reload()
+                if not voice:
+                    voice = str(_session.settings.get("tts_voice") or "") or None
+                mp3 = synthesize(text, voice=voice)
+            except Exception as e:
+                self._json(500, {"error": f"tts failed: {e}"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "audio/mpeg")
+            self.send_header("Content-Length", str(len(mp3)))
+            self.end_headers()
+            self.wfile.write(mp3)
+            return
+
+        if path != "/api/chat":
+            self._json(404, {"error": "not found"})
             return
         msg = str(data.get("message") or "").strip()
         if not msg:

@@ -7,9 +7,10 @@ if errorlevel 1 (
 if not exist .venv (
   python -m venv .venv
   call .venv\Scripts\activate.bat
-  pip install requests
+  pip install requests edge-tts
 ) else (
   call .venv\Scripts\activate.bat
+  pip install -q requests edge-tts
 )
 echo.
 echo Åbn Chrome/Edge: http://127.0.0.1:7860

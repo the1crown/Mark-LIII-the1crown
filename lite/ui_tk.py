@@ -33,7 +33,7 @@ class ChatApp(tk.Tk):
         self.backend_var = tk.StringVar(value="auto")
         backend = ttk.Combobox(
             top, textvariable=self.backend_var, width=10, state="readonly",
-            values=("auto", "ollama", "openai"),
+            values=("auto", "ollama", "openai", "mistral"),
         )
         backend.pack(side=tk.LEFT, padx=(4, 12))
         backend.bind("<<ComboboxSelected>>", self._on_backend)

@@ -23,11 +23,13 @@ ENV_PATH = ROOT / ".env"
 DEFAULTS: dict[str, Any] = {
     "assistant_name": "JARVIS",
     "cloud_enabled": False,
-    "cloud_provider": "openai",  # only used when cloud_enabled
+    "cloud_provider": "openai",  # openai | mistral — only when cloud_enabled
     "local_model": "qwen2.5:3b",
     "cloud_model": "gpt-4o-mini",
+    "mistral_model": "mistral-small-latest",
     "ollama_url": "http://127.0.0.1:11434",
     "openai_base_url": "https://api.openai.com/v1",
+    "mistral_base_url": "https://api.mistral.ai/v1",
     "max_output_tokens": 180,
     "max_history_turns": 6,
     "max_context_chars": 6000,
@@ -35,12 +37,12 @@ DEFAULTS: dict[str, Any] = {
         "You are a concise desktop assistant. Answer in few sentences. "
         "Prefer Danish if the user writes Danish. Do not invent tool results."
     ),
-    # Voice hooks (phase 2) — stored so UI can flip them later without schema churn.
-    "push_to_talk_enabled": False,
-    "tts_enabled": False,
+    # Browser voice (Web Speech API) — no cloud key required.
+    "push_to_talk_enabled": True,
+    "tts_enabled": True,
 }
 
-SECRET_KEYS = ("OPENAI_API_KEY",)
+SECRET_KEYS = ("OPENAI_API_KEY", "MISTRAL_API_KEY")
 
 
 def _parse_env_file(path: Path) -> dict[str, str]:

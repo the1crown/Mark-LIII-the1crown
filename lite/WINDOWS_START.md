@@ -51,11 +51,16 @@ Console fallback:
 python -m lite --console
 ```
 
-## 5. Cloud (optional, manual)
+## 5. Voice (browser)
 
-1. Put `OPENAI_API_KEY=sk-...` in `.env`.
-2. In the UI tick **Cloud enabled**, or set `"cloud_enabled": true` in `config/lite_settings.json`.
-3. Pick backend **openai** in the toolbar (or leave **auto** once cloud is enabled).
+On http://127.0.0.1:7860 use **Tale** (mic) and tick **Oplæs**.
+Uses the browser Web Speech API (Chrome/Edge) — no API key required.
+
+## 6. Cloud (optional, manual)
+
+1. Copy `.env.example` → `.env` and set `OPENAI_API_KEY` and/or `MISTRAL_API_KEY`.
+2. Set `"cloud_enabled": true` and `"cloud_provider": "openai"` or `"mistral"` in `config/lite_settings.json`.
+3. Or force backend in the Tk toolbar / `:backend mistral` in console.
 
 Cloud is never chosen automatically without that switch.
 

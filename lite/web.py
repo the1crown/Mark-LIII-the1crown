@@ -1,10 +1,9 @@
-"""Minimal localhost web chat. No background polling — only talks to the model on Send."""
+"""Minimal localhost web chat with browser mic/TTS. No idle AI calls."""
 from __future__ import annotations
 
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from urllib.parse import urlparse
 
 from .session import Session
@@ -21,10 +20,10 @@ _HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>JARVIS lite</title>
 <style>
-  :root { --bg:#0f1419; --panel:#1a222c; --text:#e7ecf1; --muted:#8b98a5; --accent:#3d8bfd; }
+  :root { --bg:#0f1419; --panel:#1a222c; --text:#e7ecf1; --muted:#8b98a5; --accent:#3d8bfd; --hot:#c44; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.45 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
-  header { padding:12px 16px; background:var(--panel); border-bottom:1px solid #243040; display:flex; gap:12px; align-items:center; }
+  header { padding:12px 16px; background:var(--panel); border-bottom:1px solid #243040; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
   header h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.02em; }
   header span { color:var(--muted); font-size:12px; }
   #log { flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
@@ -32,20 +31,25 @@ _HTML = """<!DOCTYPE html>
   .msg.you { align-self:flex-end; background:#243447; padding:10px 12px; border-radius:12px 12px 4px 12px; }
   .msg.bot { align-self:flex-start; background:var(--panel); padding:10px 12px; border-radius:12px 12px 12px 4px; }
   .meta { font-size:11px; color:var(--muted); margin-top:4px; }
-  form { display:flex; gap:8px; padding:12px; background:var(--panel); border-top:1px solid #243040; }
-  input { flex:1; background:#0f1419; border:1px solid #314155; color:var(--text); border-radius:8px; padding:10px 12px; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 16px; cursor:pointer; font-weight:600; }
+  form { display:flex; gap:8px; padding:12px; background:var(--panel); border-top:1px solid #243040; align-items:center; }
+  input[type=text] { flex:1; background:#0f1419; border:1px solid #314155; color:var(--text); border-radius:8px; padding:10px 12px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 14px; cursor:pointer; font-weight:600; }
   button:disabled { opacity:.5; cursor:wait; }
+  button.ptt { background:#2a3544; min-width:88px; }
+  button.ptt.hot { background:var(--hot); }
+  label.chk { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; white-space:nowrap; }
 </style>
 </head>
 <body>
 <header>
   <h1>JARVIS lite</h1>
-  <span>http://127.0.0.1:7860 · lokal Ollama · ingen idle-kald</span>
+  <span>http://127.0.0.1:7860 · tale via browser · ingen idle-kald</span>
+  <label class="chk"><input type="checkbox" id="tts" checked/> Oplæs</label>
 </header>
 <div id="log"></div>
 <form id="f">
-  <input id="q" autocomplete="off" placeholder="Skriv her… (/help for værktøjer)" autofocus/>
+  <button class="ptt" type="button" id="ptt" title="Hold inde / klik for at tale">🎤 Tale</button>
+  <input id="q" type="text" autocomplete="off" placeholder="Skriv her… eller brug Tale (/help)" autofocus/>
   <button id="go" type="submit">Send</button>
 </form>
 <script>
@@ -53,6 +57,12 @@ const log = document.getElementById('log');
 const f = document.getElementById('f');
 const q = document.getElementById('q');
 const go = document.getElementById('go');
+const ptt = document.getElementById('ptt');
+const ttsOn = document.getElementById('tts');
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognizing = false;
+let rec = null;
+
 function add(role, text, meta) {
   const d = document.createElement('div');
   d.className = 'msg ' + (role === 'you' ? 'you' : 'bot');
@@ -66,11 +76,19 @@ function add(role, text, meta) {
   log.appendChild(d);
   log.scrollTop = log.scrollHeight;
 }
-f.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = q.value.trim();
+
+function speak(text) {
+  if (!ttsOn.checked || !window.speechSynthesis || !text) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'da-DK';
+  u.rate = 1.05;
+  window.speechSynthesis.speak(u);
+}
+
+async function sendText(text) {
+  text = (text || '').trim();
   if (!text) return;
-  q.value = '';
   add('you', text);
   go.disabled = true;
   try {
@@ -80,14 +98,47 @@ f.addEventListener('submit', async (e) => {
       body: JSON.stringify({message: text})
     });
     const data = await r.json();
-    add('bot', data.reply || data.error || '(tom)', data.meta || '');
+    const reply = data.reply || data.error || '(tom)';
+    add('bot', reply, data.meta || '');
+    speak(reply);
   } catch (err) {
     add('bot', 'Netværksfejl: ' + err);
   } finally {
     go.disabled = false;
     q.focus();
   }
+}
+
+f.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const text = q.value.trim();
+  q.value = '';
+  await sendText(text);
 });
+
+if (SR) {
+  rec = new SR();
+  rec.lang = 'da-DK';
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  rec.onresult = (ev) => {
+    const t = ev.results[0][0].transcript;
+    q.value = t;
+    sendText(t);
+  };
+  rec.onerror = () => { recognizing = false; ptt.classList.remove('hot'); ptt.textContent = '🎤 Tale'; };
+  rec.onend = () => { recognizing = false; ptt.classList.remove('hot'); ptt.textContent = '🎤 Tale'; };
+  ptt.addEventListener('click', () => {
+    if (recognizing) { rec.stop(); return; }
+    recognizing = true;
+    ptt.classList.add('hot');
+    ptt.textContent = '● …';
+    try { rec.start(); } catch (e) { recognizing = false; ptt.classList.remove('hot'); }
+  });
+} else {
+  ptt.disabled = true;
+  ptt.title = 'Tale understøttes ikke i denne browser (prøv Chrome/Edge)';
+}
 </script>
 </body>
 </html>
@@ -95,7 +146,7 @@ f.addEventListener('submit', async (e) => {
 
 
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt: str, *args) -> None:  # quieter
+    def log_message(self, fmt: str, *args) -> None:
         print(f"[lite-web] {args[0]}" if args else f"[lite-web] {fmt}")
 
     def _json(self, code: int, payload: dict) -> None:
@@ -117,7 +168,14 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/api/health":
-            self._json(200, {"ok": True, "host": HOST, "port": PORT})
+            self._json(200, {
+                "ok": True, "host": HOST, "port": PORT,
+                "voice": "browser-web-speech",
+                "cloud_keys": {
+                    "openai": bool((_session.secrets.get("OPENAI_API_KEY") or "").strip()),
+                    "mistral": bool((_session.secrets.get("MISTRAL_API_KEY") or "").strip()),
+                },
+            })
             return
         self._json(404, {"error": "not found"})
 
@@ -138,15 +196,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "empty message"})
             return
         with _lock:
+            _session.reload()
             reply = _session.ask(msg)
             meta = _session.format_meta()
         self._json(200, {"reply": reply, "meta": meta})
 
 
 def run(host: str = HOST, port: int = PORT) -> None:
+    global HOST, PORT
+    HOST, PORT = host, port
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"JARVIS lite web: http://{host}:{port}")
-    print("Ctrl+C to stop. No idle AI calls.")
+    print("Tale/oplæsning: browser Web Speech API (Chrome/Edge). Ctrl+C to stop.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

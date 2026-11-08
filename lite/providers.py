@@ -31,8 +31,8 @@ def chat(route: Route, messages: list[dict[str, str]],
          max_tokens: int = 180, timeout: int = 120) -> ChatResult:
     t0 = time.perf_counter()
     try:
-        if route.backend == "openai":
-            return _openai(route, messages, max_tokens, timeout, t0)
+        if route.backend in ("openai", "mistral"):
+            return _openai_compat(route, messages, max_tokens, timeout, t0)
         return _ollama(route, messages, max_tokens, timeout, t0)
     except requests.exceptions.ConnectionError:
         return ChatResult(
@@ -84,8 +84,9 @@ def _ollama(route: Route, messages: list[dict[str, str]],
     )
 
 
-def _openai(route: Route, messages: list[dict[str, str]],
-            max_tokens: int, timeout: int, t0: float) -> ChatResult:
+def _openai_compat(route: Route, messages: list[dict[str, str]],
+                   max_tokens: int, timeout: int, t0: float) -> ChatResult:
+    """OpenAI + Mistral (and similar) share /chat/completions."""
     headers = {
         "Authorization": f"Bearer {route.api_key}",
         "Content-Type": "application/json",
@@ -116,7 +117,7 @@ def _openai(route: Route, messages: list[dict[str, str]],
     return ChatResult(
         content=content,
         model=data.get("model") or route.model,
-        backend="openai",
+        backend=route.backend,
         latency_ms=int((time.perf_counter() - t0) * 1000),
         prompt_tokens=int(prompt_t) if prompt_t is not None else None,
         completion_tokens=int(comp_t) if comp_t is not None else None,

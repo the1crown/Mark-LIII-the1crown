@@ -17,9 +17,19 @@ def test_router_local_default() -> None:
 def test_router_cloud_manual() -> None:
     s = dict(settings.DEFAULTS)
     s["cloud_enabled"] = True
+    s["cloud_provider"] = "openai"
     r = router.choose_route(s, {"OPENAI_API_KEY": "sk-test"})
     assert r.backend == "openai"
     assert r.model == s["cloud_model"]
+
+
+def test_router_mistral_manual() -> None:
+    s = dict(settings.DEFAULTS)
+    s["cloud_enabled"] = True
+    s["cloud_provider"] = "mistral"
+    r = router.choose_route(s, {"MISTRAL_API_KEY": "ms-test"})
+    assert r.backend == "mistral"
+    assert "mistral" in r.model
 
 
 def test_router_cloud_without_key_stays_local() -> None:

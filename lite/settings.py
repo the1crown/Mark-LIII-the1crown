@@ -32,7 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "ollama_url": "http://127.0.0.1:11434",
     "openai_base_url": "https://api.openai.com/v1",
     "mistral_base_url": "https://api.mistral.ai/v1",
-    "max_output_tokens": 180,
+    "max_output_tokens": 80,
     "max_history_turns": 6,
     "max_context_chars": 6000,
     "system_prompt": (

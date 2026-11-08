@@ -27,7 +27,8 @@ def synthesize(text: str, voice: str | None = None) -> bytes:
 
     async def _run() -> bytes:
         import edge_tts
-        comm = edge_tts.Communicate(cleaned, voice=voice, rate="+0%", pitch="+0Hz")
+        # Slightly faster rate cuts perceived latency without sounding rushed.
+        comm = edge_tts.Communicate(cleaned, voice=voice, rate="+8%", pitch="+0Hz")
         buf = bytearray()
         async for chunk in comm.stream():
             if chunk.get("type") == "audio":

@@ -552,6 +552,7 @@ async function sendText(text, fromVoice) {
     const info = data.info || {};
     applyTheme(info.backend, info.model);
     add('bot', reply, data.meta || '');
+    // Speak in parallel with UI updates — don't block the next listen arm longer than needed
     await speak(reply);
   } catch (err) {
     add('bot', 'Forbindelsesfejl: ' + err);
@@ -827,27 +828,36 @@ class Handler(BaseHTTPRequestHandler):
 def run(host: str = HOST, port: int = PORT) -> None:
     global HOST, PORT
     HOST, PORT = host, port
-    # Warm local model so the first spoken turn is not a cold load.
+    # Warm whichever motor will answer first.
     try:
         from . import providers
         from . import router
         _session.reload()
-        route = router.choose_route(_session.settings, _session.secrets, "ollama")
-        if providers.ping_ollama(route.base_url):
-            print(f"[lite-web] Warming {route.model}…")
+        route = router.choose_route(_session.settings, _session.secrets, None)
+        print(f"[lite-web] Warming {route.backend}:{route.model}…")
+        if route.backend == "ollama" and not providers.ping_ollama(route.base_url):
+            print("[lite-web] Ollama not up — skip warmup.")
+        else:
             providers.chat(
                 route,
                 [{"role": "user", "content": "hi"}],
                 max_tokens=1,
                 timeout=180,
             )
-            print("[lite-web] Local model ready.")
+            print("[lite-web] Model ready.")
     except Exception as e:
         print(f"[lite-web] Warmup skipped: {e}")
 
-    httpd = ThreadingHTTPServer((host, port), Handler)
+    try:
+        httpd = ThreadingHTTPServer((host, port), Handler)
+    except OSError as e:
+        print(f"[lite-web] Cannot bind {host}:{port} — {e}")
+        print("Another program may own the port. Close it, or set a free port:")
+        print("  python -m lite --web --port 7861")
+        raise SystemExit(1) from e
+
     print(f"JARVIS lite web: http://{host}:{port}")
-    print("Default motor: Lokal (Ollama). HUD color follows model. Ctrl+C stop.")
+    print("Open that URL on THIS computer. Ctrl+C stop.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

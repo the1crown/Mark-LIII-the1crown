@@ -56,10 +56,11 @@ def _ollama(route: Route, messages: list[dict[str, str]],
         "model": route.model,
         "messages": messages,
         "stream": False,
-        "keep_alive": "5m",
+        "keep_alive": -1,  # keep model hot — cold loads feel multi-second
         "options": {
             "num_predict": max_tokens,
-            "temperature": 0.4,
+            "temperature": 0.3,
+            "num_ctx": 2048,  # smaller context = faster on CPU
         },
     }
     resp = requests.post(f"{route.base_url}/api/chat", json=payload, timeout=timeout)

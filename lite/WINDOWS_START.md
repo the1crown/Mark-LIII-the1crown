@@ -29,15 +29,17 @@ copy .env.example .env
 
 Edit `.env` only if you want cloud (OpenAI). Leave the key empty for local-only.
 
-## 4. Run the lite chat
+## 4. Run the lite chat (tale)
 
-Browser (localhost):
+Double-click `start-lite.bat`, or:
 
 ```powershell
 python -m lite --web
 ```
 
-Open http://127.0.0.1:7860
+Open **Chrome or Edge**: http://127.0.0.1:7860  
+Allow the microphone → press **Tryk for at tale** (or hold Space) → hear the reply.  
+Leave **Oplæs svar** and **Bliv ved med at lytte** checked for a continuous talk loop.
 
 Desktop window:
 

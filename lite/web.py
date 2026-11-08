@@ -1,4 +1,4 @@
-"""Minimal localhost web chat with browser mic/TTS. No idle AI calls."""
+"""Minimal localhost web chat with talk-first voice loop. No idle AI calls."""
 from __future__ import annotations
 
 import json
@@ -20,48 +20,66 @@ _HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>JARVIS lite</title>
 <style>
-  :root { --bg:#0f1419; --panel:#1a222c; --text:#e7ecf1; --muted:#8b98a5; --accent:#3d8bfd; --hot:#c44; }
+  :root { --bg:#0f1419; --panel:#1a222c; --text:#e7ecf1; --muted:#8b98a5; --accent:#3d8bfd; --hot:#c44; --ok:#2f9e44; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.45 "Segoe UI", system-ui, sans-serif; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; }
   header { padding:12px 16px; background:var(--panel); border-bottom:1px solid #243040; display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0; font-weight:600; letter-spacing:.02em; }
-  header span { color:var(--muted); font-size:12px; }
+  header h1 { font-size:16px; margin:0; font-weight:600; }
+  header span, #status { color:var(--muted); font-size:12px; }
+  #status { margin-left:auto; }
   #log { flex:1; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:10px; }
   .msg { max-width:720px; white-space:pre-wrap; }
   .msg.you { align-self:flex-end; background:#243447; padding:10px 12px; border-radius:12px 12px 4px 12px; }
   .msg.bot { align-self:flex-start; background:var(--panel); padding:10px 12px; border-radius:12px 12px 12px 4px; }
   .meta { font-size:11px; color:var(--muted); margin-top:4px; }
-  form { display:flex; gap:8px; padding:12px; background:var(--panel); border-top:1px solid #243040; align-items:center; }
+  .dock { padding:16px; background:var(--panel); border-top:1px solid #243040; display:flex; flex-direction:column; gap:10px; }
+  .row { display:flex; gap:8px; align-items:center; }
   input[type=text] { flex:1; background:#0f1419; border:1px solid #314155; color:var(--text); border-radius:8px; padding:10px 12px; }
   button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:10px 14px; cursor:pointer; font-weight:600; }
   button:disabled { opacity:.5; cursor:wait; }
-  button.ptt { background:#2a3544; min-width:88px; }
-  button.ptt.hot { background:var(--hot); }
+  #talk {
+    width:100%; height:72px; font-size:20px; border-radius:14px; background:#2a3544;
+  }
+  #talk.hot { background:var(--hot); }
+  #talk.busy { background:#3a4555; }
   label.chk { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; white-space:nowrap; }
+  .hint { font-size:12px; color:var(--muted); text-align:center; }
 </style>
 </head>
 <body>
 <header>
   <h1>JARVIS lite</h1>
-  <span>http://127.0.0.1:7860 · tale via browser · ingen idle-kald</span>
-  <label class="chk"><input type="checkbox" id="tts" checked/> Oplæs</label>
+  <span>Tal med systemet · Chrome/Edge · mellemrum = tale</span>
+  <div id="status">Klar</div>
 </header>
 <div id="log"></div>
-<form id="f">
-  <button class="ptt" type="button" id="ptt" title="Hold inde / klik for at tale">🎤 Tale</button>
-  <input id="q" type="text" autocomplete="off" placeholder="Skriv her… eller brug Tale (/help)" autofocus/>
-  <button id="go" type="submit">Send</button>
-</form>
+<div class="dock">
+  <button id="talk" type="button">🎤 Tryk for at tale</button>
+  <div class="row">
+    <label class="chk"><input type="checkbox" id="tts" checked/> Oplæs svar</label>
+    <label class="chk"><input type="checkbox" id="cont" checked/> Bliv ved med at lytte</label>
+  </div>
+  <form id="f" class="row">
+    <input id="q" type="text" autocomplete="off" placeholder="Eller skriv her…"/>
+    <button id="go" type="submit">Send</button>
+  </form>
+  <div class="hint">Tillad mikrofon når browseren spørger. Ingen AI-kald mens du er stille.</div>
+</div>
 <script>
 const log = document.getElementById('log');
 const f = document.getElementById('f');
 const q = document.getElementById('q');
 const go = document.getElementById('go');
-const ptt = document.getElementById('ptt');
+const talk = document.getElementById('talk');
 const ttsOn = document.getElementById('tts');
+const contOn = document.getElementById('cont');
+const statusEl = document.getElementById('status');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 let recognizing = false;
+let busy = false;
 let rec = null;
+
+function setStatus(t) { statusEl.textContent = t; }
 
 function add(role, text, meta) {
   const d = document.createElement('div');
@@ -78,19 +96,48 @@ function add(role, text, meta) {
 }
 
 function speak(text) {
-  if (!ttsOn.checked || !window.speechSynthesis || !text) return;
-  window.speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = 'da-DK';
-  u.rate = 1.05;
-  window.speechSynthesis.speak(u);
+  return new Promise((resolve) => {
+    if (!ttsOn.checked || !window.speechSynthesis || !text) { resolve(); return; }
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'da-DK';
+    u.rate = 1.05;
+    u.onend = () => resolve();
+    u.onerror = () => resolve();
+    setStatus('Taler…');
+    window.speechSynthesis.speak(u);
+  });
 }
 
-async function sendText(text) {
+function startListen() {
+  if (!rec || recognizing || busy) return;
+  recognizing = true;
+  talk.classList.add('hot');
+  talk.textContent = '● Lytter… (klik for at stoppe)';
+  setStatus('Lytter…');
+  try { rec.start(); } catch (e) {
+    recognizing = false;
+    talk.classList.remove('hot');
+    talk.textContent = '🎤 Tryk for at tale';
+    setStatus('Klar');
+  }
+}
+
+function stopListen() {
+  if (!rec || !recognizing) return;
+  try { rec.stop(); } catch (e) {}
+}
+
+async function sendText(text, fromVoice) {
   text = (text || '').trim();
-  if (!text) return;
-  add('you', text);
+  if (!text || busy) return;
+  busy = true;
+  talk.classList.add('busy');
+  talk.disabled = true;
   go.disabled = true;
+  add('you', text);
+  setStatus('Tænker…');
+  let reply = '';
   try {
     const r = await fetch('/api/chat', {
       method: 'POST',
@@ -98,14 +145,23 @@ async function sendText(text) {
       body: JSON.stringify({message: text})
     });
     const data = await r.json();
-    const reply = data.reply || data.error || '(tom)';
+    reply = data.reply || data.error || '(tom)';
     add('bot', reply, data.meta || '');
-    speak(reply);
+    await speak(reply);
   } catch (err) {
     add('bot', 'Netværksfejl: ' + err);
   } finally {
+    busy = false;
+    talk.disabled = false;
+    talk.classList.remove('busy');
     go.disabled = false;
-    q.focus();
+    talk.textContent = '🎤 Tryk for at tale';
+    setStatus('Klar');
+    if (fromVoice && contOn.checked && ttsOn.checked) {
+      setTimeout(startListen, 250);
+    } else {
+      q.focus();
+    }
   }
 }
 
@@ -113,31 +169,65 @@ f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = q.value.trim();
   q.value = '';
-  await sendText(text);
+  await sendText(text, false);
+});
+
+talk.addEventListener('click', () => {
+  if (busy) return;
+  if (recognizing) stopListen();
+  else startListen();
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || e.repeat) return;
+  if (document.activeElement === q) return;
+  e.preventDefault();
+  if (busy) return;
+  if (!recognizing) startListen();
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code !== 'Space') return;
+  if (document.activeElement === q) return;
+  if (recognizing) stopListen();
 });
 
 if (SR) {
   rec = new SR();
   rec.lang = 'da-DK';
-  rec.interimResults = false;
+  rec.interimResults = true;
+  rec.continuous = false;
   rec.maxAlternatives = 1;
+  let finalText = '';
+  rec.onstart = () => { finalText = ''; };
   rec.onresult = (ev) => {
-    const t = ev.results[0][0].transcript;
-    q.value = t;
-    sendText(t);
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const t = ev.results[i][0].transcript;
+      if (ev.results[i].isFinal) finalText += t;
+      else interim += t;
+    }
+    q.value = (finalText || interim).trim();
   };
-  rec.onerror = () => { recognizing = false; ptt.classList.remove('hot'); ptt.textContent = '🎤 Tale'; };
-  rec.onend = () => { recognizing = false; ptt.classList.remove('hot'); ptt.textContent = '🎤 Tale'; };
-  ptt.addEventListener('click', () => {
-    if (recognizing) { rec.stop(); return; }
-    recognizing = true;
-    ptt.classList.add('hot');
-    ptt.textContent = '● …';
-    try { rec.start(); } catch (e) { recognizing = false; ptt.classList.remove('hot'); }
-  });
+  rec.onerror = () => {
+    recognizing = false;
+    talk.classList.remove('hot');
+    talk.textContent = '🎤 Tryk for at tale';
+    setStatus('Klar');
+  };
+  rec.onend = () => {
+    recognizing = false;
+    talk.classList.remove('hot');
+    talk.textContent = '🎤 Tryk for at tale';
+    const t = (finalText || q.value || '').trim();
+    q.value = '';
+    if (t) sendText(t, true);
+    else setStatus('Klar');
+  };
+  add('bot', 'Hej — tryk på knappen eller hold mellemrum nede, og tal. Jeg svarer højt.');
 } else {
-  ptt.disabled = true;
-  ptt.title = 'Tale understøttes ikke i denne browser (prøv Chrome/Edge)';
+  talk.disabled = true;
+  talk.textContent = 'Tale kræver Chrome eller Edge';
+  setStatus('Ingen mikrofon-API');
 }
 </script>
 </body>
@@ -168,6 +258,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
         if path == "/api/health":
+            # refresh secrets each health check so .env edits apply without full restart
+            _session.reload()
             self._json(200, {
                 "ok": True, "host": HOST, "port": PORT,
                 "voice": "browser-web-speech",
@@ -207,7 +299,7 @@ def run(host: str = HOST, port: int = PORT) -> None:
     HOST, PORT = host, port
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"JARVIS lite web: http://{host}:{port}")
-    print("Tale/oplæsning: browser Web Speech API (Chrome/Edge). Ctrl+C to stop.")
+    print("Tale: tryk knap / hold mellemrum. Oplæsning i browser. Ctrl+C stop.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

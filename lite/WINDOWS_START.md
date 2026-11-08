@@ -38,8 +38,8 @@ python -m lite --web
 ```
 
 Open **Chrome or Edge**: http://127.0.0.1:7860  
-Allow the microphone → press **Tryk for at tale** (or hold Space) → hear the reply.  
-Leave **Oplæs svar** and **Bliv ved med at lytte** checked for a continuous talk loop.
+Allow the microphone → press **Start samtale** (or Space).  
+JARVIS listens → answers aloud → listens again until you press **Stop samtale**, say «stop», or hit Esc.
 
 Desktop window:
 

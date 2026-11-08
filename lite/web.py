@@ -269,10 +269,9 @@ _HTML = r"""<!DOCTYPE html>
   </main>
 
   <div class="dock">
-    <button id="talk" type="button">Engage voice</button>
+    <button id="talk" type="button">Start samtale</button>
     <div class="row">
-      <label class="chk"><input type="checkbox" id="tts" checked/> Speak replies</label>
-      <label class="chk"><input type="checkbox" id="cont" checked/> Keep listening</label>
+      <label class="chk"><input type="checkbox" id="tts" checked/> Oplæs svar</label>
       <div class="legend">
         <span><i class="l-ollama"></i>Ollama</span>
         <span><i class="l-mistral"></i>Mistral</span>
@@ -281,10 +280,10 @@ _HTML = r"""<!DOCTYPE html>
       </div>
     </div>
     <form id="f" class="row">
-      <input id="q" type="text" autocomplete="off" placeholder="Type a command…"/>
+      <input id="q" type="text" autocomplete="off" placeholder="Eller skriv her midt i samtalen…"/>
       <button id="go" type="submit">Send</button>
     </form>
-    <div class="hint">Hold Space to talk · allow microphone · HUD color follows active model</div>
+    <div class="hint">Samtale-mode: lyt → svar → lyt igen. Esc afbryder. Farve følger model.</div>
   </div>
 
 <script>
@@ -294,31 +293,50 @@ const q = document.getElementById('q');
 const go = document.getElementById('go');
 const talk = document.getElementById('talk');
 const ttsOn = document.getElementById('tts');
-const contOn = document.getElementById('cont');
 const statusEl = document.getElementById('status');
 const modelChip = document.getElementById('modelChip');
 const orb = document.getElementById('orb');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+let conversation = false;  // continuous talk loop
 let recognizing = false;
 let busy = false;
 let rec = null;
+let finalText = '';
+let listenTimer = null;
 
 function setStatus(t) { statusEl.textContent = t; }
 
 function applyTheme(backend, model) {
   const b = (backend || 'mistral').toLowerCase();
-  document.body.className = 'theme-' + (
+  const theme =
     b === 'ollama' ? 'ollama' :
     b === 'mistral' ? 'mistral' :
     b === 'openai' ? 'openai' :
-    (b === 'local' || b === 'tool') ? 'local' : 'mistral'
-  );
+    (b === 'local' || b === 'tool') ? 'local' : 'mistral';
+  document.body.className = 'theme-' + theme;
   modelChip.textContent = 'MODEL · ' + ((model || b || '—') + '').toUpperCase();
 }
 
 function setOrb(mode) {
   orb.classList.remove('listening', 'thinking', 'speaking');
   if (mode) orb.classList.add(mode);
+}
+
+function updateTalkBtn() {
+  if (!SR) {
+    talk.disabled = true;
+    talk.textContent = 'Tale kræver Chrome/Edge';
+    return;
+  }
+  talk.disabled = false;
+  if (conversation) {
+    talk.classList.add('hot');
+    talk.textContent = busy || recognizing ? 'Samtale aktiv · stop' : 'Stop samtale';
+  } else {
+    talk.classList.remove('hot');
+    talk.textContent = 'Start samtale';
+  }
 }
 
 function add(role, text, meta) {
@@ -339,13 +357,17 @@ function add(role, text, meta) {
   log.scrollTop = log.scrollHeight;
 }
 
+function cancelSpeech() {
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+
 function speak(text) {
   return new Promise((resolve) => {
     if (!ttsOn.checked || !window.speechSynthesis || !text) { resolve(); return; }
-    window.speechSynthesis.cancel();
+    cancelSpeech();
     const u = new SpeechSynthesisUtterance(text);
     u.lang = 'da-DK';
-    u.rate = 1.02;
+    u.rate = 1.05;
     u.onend = () => resolve();
     u.onerror = () => resolve();
     setStatus('SPEAKING');
@@ -354,19 +376,24 @@ function speak(text) {
   });
 }
 
+function scheduleListen(delay) {
+  clearTimeout(listenTimer);
+  if (!conversation) return;
+  listenTimer = setTimeout(() => startListen(), delay || 200);
+}
+
 function startListen() {
-  if (!rec || recognizing || busy) return;
+  if (!rec || !conversation || recognizing || busy) return;
+  finalText = '';
   recognizing = true;
-  talk.classList.add('hot');
-  talk.textContent = 'Listening…';
+  updateTalkBtn();
   setStatus('LISTENING');
   setOrb('listening');
-  try { rec.start(); } catch (e) {
+  try { rec.start(); }
+  catch (e) {
     recognizing = false;
-    talk.classList.remove('hot');
-    talk.textContent = 'Engage voice';
-    setStatus('STANDBY');
-    setOrb(null);
+    // Chrome throws if started too soon — retry briefly while conversation is on
+    scheduleListen(400);
   }
 }
 
@@ -375,12 +402,44 @@ function stopListen() {
   try { rec.stop(); } catch (e) {}
 }
 
+function stopConversation() {
+  conversation = false;
+  clearTimeout(listenTimer);
+  cancelSpeech();
+  stopListen();
+  recognizing = false;
+  busy = false;
+  go.disabled = false;
+  setStatus('STANDBY');
+  setOrb(null);
+  updateTalkBtn();
+}
+
+function startConversation() {
+  if (!rec) return;
+  conversation = true;
+  updateTalkBtn();
+  add('bot', 'Samtale startet. Tal frit — jeg lytter igen efter hvert svar. Sig stop eller tryk knappen for at afslutte.');
+  startListen();
+}
+
 async function sendText(text, fromVoice) {
   text = (text || '').trim();
   if (!text || busy) return;
+
+  // Voice command to end conversation
+  const low = text.toLowerCase();
+  if (fromVoice && /^(stop|stop samtale|afslut|farvel|godnat)\b/.test(low)) {
+    add('you', text);
+    add('bot', 'Samtale afsluttet. Klar når du er.');
+    stopConversation();
+    if (ttsOn.checked) await speak('Samtale afsluttet.');
+    return;
+  }
+
   busy = true;
-  talk.disabled = true;
   go.disabled = true;
+  updateTalkBtn();
   add('you', text);
   setStatus('THINKING');
   setOrb('thinking');
@@ -398,18 +457,17 @@ async function sendText(text, fromVoice) {
     add('bot', reply, data.meta || '');
     await speak(reply);
   } catch (err) {
-    add('bot', 'Link failure: ' + err);
+    add('bot', 'Forbindelsesfejl: ' + err);
   } finally {
     busy = false;
-    talk.disabled = false;
     go.disabled = false;
-    talk.classList.remove('hot');
-    talk.textContent = 'Engage voice';
-    setStatus('STANDBY');
-    setOrb(null);
-    if (fromVoice && contOn.checked && ttsOn.checked) {
-      setTimeout(startListen, 280);
+    updateTalkBtn();
+    if (conversation) {
+      setStatus('LISTENING');
+      scheduleListen(280);
     } else {
+      setStatus('STANDBY');
+      setOrb(null);
       q.focus();
     }
   }
@@ -419,26 +477,26 @@ f.addEventListener('submit', async (e) => {
   e.preventDefault();
   const text = q.value.trim();
   q.value = '';
+  // Typed lines also work during conversation mode
+  if (recognizing) stopListen();
   await sendText(text, false);
 });
 
 talk.addEventListener('click', () => {
-  if (busy) return;
-  if (recognizing) stopListen();
-  else startListen();
+  if (!SR) return;
+  if (conversation) stopConversation();
+  else startConversation();
 });
 
 window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    if (conversation) stopConversation();
+    return;
+  }
   if (e.code !== 'Space' || e.repeat) return;
   if (document.activeElement === q) return;
   e.preventDefault();
-  if (busy) return;
-  if (!recognizing) startListen();
-});
-window.addEventListener('keyup', (e) => {
-  if (e.code !== 'Space') return;
-  if (document.activeElement === q) return;
-  if (recognizing) stopListen();
+  if (!conversation) startConversation();
 });
 
 fetch('/api/health').then(r => r.json()).then(h => {
@@ -450,10 +508,11 @@ if (SR) {
   rec = new SR();
   rec.lang = 'da-DK';
   rec.interimResults = true;
-  rec.continuous = false;
+  rec.continuous = false; // one utterance per turn; we re-arm ourselves
   rec.maxAlternatives = 1;
-  let finalText = '';
+
   rec.onstart = () => { finalText = ''; };
+
   rec.onresult = (ev) => {
     let interim = '';
     for (let i = ev.resultIndex; i < ev.results.length; i++) {
@@ -463,28 +522,43 @@ if (SR) {
     }
     q.value = (finalText || interim).trim();
   };
-  rec.onerror = () => {
+
+  rec.onerror = (ev) => {
     recognizing = false;
-    talk.classList.remove('hot');
-    talk.textContent = 'Engage voice';
-    setStatus('STANDBY');
-    setOrb(null);
+    const err = (ev && ev.error) || '';
+    // no-speech / aborted: keep the conversation loop alive
+    if (conversation && (err === 'no-speech' || err === 'aborted' || err === 'network')) {
+      scheduleListen(350);
+      return;
+    }
+    if (!conversation) {
+      setStatus('STANDBY');
+      setOrb(null);
+      updateTalkBtn();
+    }
   };
+
   rec.onend = () => {
     recognizing = false;
-    talk.classList.remove('hot');
-    talk.textContent = 'Engage voice';
     const t = (finalText || q.value || '').trim();
     q.value = '';
+    finalText = '';
+    if (!conversation) {
+      updateTalkBtn();
+      setStatus('STANDBY');
+      setOrb(null);
+      return;
+    }
     if (t) sendText(t, true);
-    else { setStatus('STANDBY'); setOrb(null); }
+    else scheduleListen(250); // silence — keep listening
   };
-  add('bot', 'Systems online. Hold Space or press Engage voice — I am standing by.');
+
+  updateTalkBtn();
+  add('bot', 'Systems online. Tryk Start samtale — så snakker vi løbende. Esc stopper.');
 } else {
-  talk.disabled = true;
-  talk.textContent = 'Voice needs Chrome/Edge';
+  updateTalkBtn();
   setStatus('NO MIC API');
-  add('bot', 'Voice API unavailable. Type instead — Chrome or Edge recommended.');
+  add('bot', 'Tale-API mangler. Brug Chrome/Edge, eller skriv i stedet.');
 }
 </script>
 </body>

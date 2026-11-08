@@ -31,11 +31,21 @@ Edit `.env` only if you want cloud (OpenAI). Leave the key empty for local-only.
 
 ## 4. Run the lite chat
 
+Browser (localhost):
+
+```powershell
+python -m lite --web
+```
+
+Open http://127.0.0.1:7860
+
+Desktop window:
+
 ```powershell
 python -m lite
 ```
 
-Use `--console` if the window UI fails:
+Console fallback:
 
 ```powershell
 python -m lite --console

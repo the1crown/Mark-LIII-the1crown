@@ -27,6 +27,8 @@ DEFAULTS: dict[str, Any] = {
     "local_model": "qwen2.5:3b",
     "cloud_model": "gpt-4o-mini",
     "mistral_model": "mistral-small-latest",
+    "mistral_document_model": "mistral-small-latest",
+    "mistral_ocr_model": "mistral-ocr-latest",
     "ollama_url": "http://127.0.0.1:11434",
     "openai_base_url": "https://api.openai.com/v1",
     "mistral_base_url": "https://api.mistral.ai/v1",

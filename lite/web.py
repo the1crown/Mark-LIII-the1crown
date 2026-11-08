@@ -286,6 +286,7 @@ _HTML = r"""<!DOCTYPE html>
     </label>
     <div class="chip" id="modelChip">MODEL · —</div>
   </header>
+  <div id="diag" class="heard">Tjekker system…</div>
   <div id="heard" class="heard" hidden></div>
 
   <main class="stage">
@@ -324,6 +325,7 @@ const statusEl = document.getElementById('status');
 const modelChip = document.getElementById('modelChip');
 const orb = document.getElementById('orb');
 const heardEl = document.getElementById('heard');
+const diagEl = document.getElementById('diag');
 const backendSel = document.getElementById('backend');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
@@ -594,13 +596,29 @@ window.addEventListener('keydown', (e) => {
   if (!conversation) startConversation();
 });
 
-fetch('/api/health').then(r => r.json()).then(h => {
-  const provider = h.preferred || 'ollama';
-  forceBackend = provider;
-  backendSel.value = ['ollama','mistral','openai'].includes(provider) ? provider : 'ollama';
-  applyTheme(forceBackend, h.model || forceBackend);
-  if (h.tts_voice) ttsVoice = h.tts_voice;
-}).catch(() => {});
+async function refreshDiag() {
+  try {
+    const r = await fetch('/api/diag');
+    const d = await r.json();
+    const parts = [];
+    parts.push(d.ollama_ok ? 'Ollama OK' : 'Ollama FEJL — start Ollama / kør start-lite.bat');
+    parts.push(d.model_ok ? ('Model ' + (d.model || '')) : ('Model mangler — ollama pull ' + (d.model || 'qwen2.5:3b')));
+    parts.push(d.tts_ok ? 'TTS OK' : 'TTS mangler — pip install edge-tts');
+    parts.push(SR ? 'Mic-API OK' : 'Mic-API mangler — brug Chrome/Edge');
+    diagEl.textContent = parts.join(' · ');
+    diagEl.style.color = (d.ollama_ok && d.model_ok) ? '' : '#ff8a3d';
+    if (d.preferred) {
+      forceBackend = d.preferred;
+      if (['ollama','mistral','openai'].includes(d.preferred)) backendSel.value = d.preferred;
+      applyTheme(forceBackend, d.model || forceBackend);
+    }
+    if (d.tts_voice) ttsVoice = d.tts_voice;
+  } catch (e) {
+    diagEl.textContent = 'Kan ikke nå serveren på http://127.0.0.1:7860 — kør start-lite.bat på denne PC.';
+    diagEl.style.color = '#ff8a3d';
+  }
+}
+refreshDiag();
 
 if (SR) {
   rec = new SR();
@@ -699,7 +717,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
-        if path == "/api/health":
+        if path in ("/api/health", "/api/diag"):
             _session.reload()
             s = _session.settings
             preferred = "mistral" if (
@@ -716,12 +734,37 @@ class Handler(BaseHTTPRequestHandler):
                 "openai": s.get("cloud_model"),
                 "ollama": s.get("local_model"),
             }.get(preferred, s.get("local_model"))
+            from . import providers
+            ollama_url = str(s.get("ollama_url") or "http://127.0.0.1:11434")
+            ollama_ok = providers.ping_ollama(ollama_url)
+            model_ok = False
+            if ollama_ok:
+                try:
+                    import requests as _rq
+                    tags = _rq.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=3).json()
+                    names = [m.get("name", "") for m in tags.get("models") or []]
+                    want = str(s.get("local_model") or "qwen2.5:3b")
+                    base = want.split(":")[0]
+                    model_ok = any(
+                        n == want or n == base or n.startswith(base + ":") for n in names
+                    )
+                except Exception:
+                    model_ok = False
+            tts_ok = False
+            try:
+                import importlib.util
+                tts_ok = importlib.util.find_spec("edge_tts") is not None
+            except Exception:
+                tts_ok = False
             self._json(200, {
                 "ok": True, "host": HOST, "port": PORT,
                 "voice": "edge-neural",
                 "tts_voice": s.get("tts_voice") or "da-DK-JeppeNeural",
                 "preferred": preferred,
-                "model": model,
+                "model": model if preferred != "ollama" else (s.get("local_model") or model),
+                "ollama_ok": ollama_ok,
+                "model_ok": model_ok,
+                "tts_ok": tts_ok,
                 "cloud_keys": {
                     "openai": bool((_session.secrets.get("OPENAI_API_KEY") or "").strip()),
                     "mistral": bool((_session.secrets.get("MISTRAL_API_KEY") or "").strip()),

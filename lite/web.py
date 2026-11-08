@@ -104,7 +104,7 @@ _HTML = r"""<!DOCTYPE html>
     margin-top: 2px;
   }
   .chip {
-    margin-left: auto;
+    margin-left: 0;
     border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
     background: color-mix(in srgb, var(--accent) 12%, transparent);
     color: var(--accent);
@@ -113,6 +113,16 @@ _HTML = r"""<!DOCTYPE html>
     letter-spacing: .08em;
     text-transform: uppercase;
     transition: border-color .35s, background .35s, color .35s;
+  }
+  .backend {
+    margin-left: auto;
+    display: flex; align-items: center; gap: 8px;
+    color: var(--muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  }
+  .backend select {
+    background: #050b14; color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    padding: 6px 8px; font: inherit; letter-spacing: .04em;
   }
   #status { color: var(--muted); font-size: 12px; letter-spacing: .06em; }
 
@@ -266,6 +276,14 @@ _HTML = r"""<!DOCTYPE html>
   <header class="top">
     <h1 class="brand">JARVIS<small>JUST A RATHER VERY INTELLIGENT SYSTEM</small></h1>
     <div id="status">STANDBY</div>
+    <label class="backend">
+      Motor
+      <select id="backend">
+        <option value="ollama">Lokal (Ollama)</option>
+        <option value="mistral">Cloud (Mistral)</option>
+        <option value="openai">Cloud (OpenAI)</option>
+      </select>
+    </label>
     <div class="chip" id="modelChip">MODEL · —</div>
   </header>
   <div id="heard" class="heard" hidden></div>
@@ -306,6 +324,7 @@ const statusEl = document.getElementById('status');
 const modelChip = document.getElementById('modelChip');
 const orb = document.getElementById('orb');
 const heardEl = document.getElementById('heard');
+const backendSel = document.getElementById('backend');
 const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 let conversation = false;  // continuous talk loop
@@ -317,6 +336,14 @@ let listenTimer = null;
 let micStream = null;
 let audioPlayer = null;
 let ttsVoice = 'da-DK-JeppeNeural';
+let forceBackend = 'ollama';
+
+backendSel.addEventListener('change', () => {
+  forceBackend = backendSel.value;
+  const label = forceBackend === 'ollama' ? 'OLLAMA' : forceBackend.toUpperCase();
+  applyTheme(forceBackend, label);
+  setStatus('MOTOR · ' + label);
+});
 
 function setStatus(t) { statusEl.textContent = t; }
 
@@ -516,7 +543,7 @@ async function sendText(text, fromVoice) {
     const r = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: text})
+      body: JSON.stringify({message: text, backend: forceBackend})
     });
     const data = await r.json();
     reply = data.reply || data.error || '(empty)';
@@ -568,8 +595,10 @@ window.addEventListener('keydown', (e) => {
 });
 
 fetch('/api/health').then(r => r.json()).then(h => {
-  const provider = (h.preferred || (h.cloud_keys && h.cloud_keys.mistral ? 'mistral' : 'ollama'));
-  applyTheme(provider, h.model || provider);
+  const provider = h.preferred || 'ollama';
+  forceBackend = provider;
+  backendSel.value = ['ollama','mistral','openai'].includes(provider) ? provider : 'ollama';
+  applyTheme(forceBackend, h.model || forceBackend);
   if (h.tts_voice) ttsVoice = h.tts_voice;
 }).catch(() => {});
 
@@ -740,8 +769,12 @@ class Handler(BaseHTTPRequestHandler):
         if not msg:
             self._json(400, {"error": "empty message"})
             return
+        backend = str(data.get("backend") or "").strip().lower() or None
+        if backend == "auto":
+            backend = None
         with _lock:
             _session.reload()
+            _session.force_backend = backend
             reply = _session.ask(msg)
             meta = _session.format_meta()
             info = dict(_session.last_meta or {})
@@ -751,9 +784,27 @@ class Handler(BaseHTTPRequestHandler):
 def run(host: str = HOST, port: int = PORT) -> None:
     global HOST, PORT
     HOST, PORT = host, port
+    # Warm local model so the first spoken turn is not a cold load.
+    try:
+        from . import providers
+        from . import router
+        _session.reload()
+        route = router.choose_route(_session.settings, _session.secrets, "ollama")
+        if providers.ping_ollama(route.base_url):
+            print(f"[lite-web] Warming {route.model}…")
+            providers.chat(
+                route,
+                [{"role": "user", "content": "hi"}],
+                max_tokens=1,
+                timeout=180,
+            )
+            print("[lite-web] Local model ready.")
+    except Exception as e:
+        print(f"[lite-web] Warmup skipped: {e}")
+
     httpd = ThreadingHTTPServer((host, port), Handler)
     print(f"JARVIS lite web: http://{host}:{port}")
-    print("HUD color follows model (ollama/mistral/openai). Ctrl+C stop.")
+    print("Default motor: Lokal (Ollama). HUD color follows model. Ctrl+C stop.")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
